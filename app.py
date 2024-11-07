@@ -1,5 +1,6 @@
+from functools import wraps
 
-from flask import Flask, request, render_template, redirect
+from flask import Flask, request, render_template, redirect, session
 import sqlite3
 app = Flask(__name__)
 # /login [GET, POST]
@@ -23,6 +24,7 @@ app = Flask(__name__)
 #
 # /complain [POST]
 # /compare [GET, PUT/PATCH]
+app.secret_key = 'vemoevmerivjnteb'
 
 def dict_factory(cursor, row):
     d = {}
@@ -42,12 +44,32 @@ class DB_local():
         self.con.close()
 
 
+def login_required(f):
+    @wraps(f)
+    def wrap(*args, **kwargs):
+        if session.get('logged_in') is None:
+            return redirect('/login')
+        return f(*args, **kwargs)
+    return wrap
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'GET':
         return render_template('login.html')
     if request.method == 'POST':
-            return 'POST'
+        username = request.form['username']
+        password = request.form['password']
+        with DB_local('identifier.sqlite') as db:
+            db.execute('SELECT * FROM user WHERE login = ? AND password = ?',
+                       (username, password))
+            user = db.fetchone()
+            if user:
+                session['logged_in'] = user['login']
+                return "Login successful, welcome " + user['login']
+            else:
+                return "Wrong username or password", 401
+
 
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -67,15 +89,10 @@ def register(form_data=None):
         return redirect('/login')
 
 
-@app.route('/logout', methods=['GET', 'POST', 'DELETE'])
+@app.route('/logout', methods=['GET'])
 def logout():
-    if request.method == 'GET':
-        return render_template('logout.html')
-    if request.method == 'POST':
-        return 'POST'
-    if request.method == 'DELETE':
-        return 'DELETE'
-
+    session.pop('logged_in', None)
+    return redirect('/login')
 
 @app.route('/items', methods=['GET', 'POST'])
 def items():
@@ -84,11 +101,23 @@ def items():
             db_cur.execute("SELECT * FROM item")
             items = db_cur.fetchall()
         return render_template('items.html', items=items)
+
     if request.method == 'POST':
-        with DB_local('identifier.sqlite') as db_cur:
-            db_cur.execute('''INSERT INTO item (photo, name, description, price_hour, price_day, price_week, price_month)
-            VALUES(:photo, :name, :description, :price_hour, :price_day, :price_week, :price_month) ''', request.form)
-        return redirect('/items')
+        if session.get('logged_in') is None:
+            return redirect('/login')
+        else:
+
+            with DB_local('identifier.sqlite') as db_cur:
+                user_login = session['owner']
+                db_cur.execute("SELECT id FROM user WHERE login = ?", (user_login,))
+                user_id = db_cur.fetchone()['id']
+
+                query_args = dict(request.form)
+                query_args['owner'] = user_id
+
+                db_cur.execute('''INSERT INTO item (photo, name, description, price_hour, price_day, price_week, price_month, owner)
+                            VALUES(:photo, :name, :description, :price_hour, :price_day, :price_week, :price_month, :owner)''',query_args)
+            return redirect('/items')
 
 
 
@@ -98,8 +127,10 @@ def item_details(items_id):
         with DB_local('identifier.sqlite') as db_cur:
             db_cur.execute("SELECT * FROM item WHERE id = ?", (items_id,))
             item = db_cur.fetchone()
-            return render_template('items_id.html' , item=item)
+        return render_template('items_id.html', item=item)
     if request.method == 'DELETE':
+        if session.get('logged_in') is None:
+            return redirect('/login')
         return f'DELETE {items_id}'
 
 
@@ -115,22 +146,35 @@ def leasers(full_name):
 @app.route('/leasers/<leasers_id>', methods=['GET'])
 def leaser_details(leasers_id):
     if request.method == 'GET':
-        return render_template('leasers_id.html')
+        with DB_local('identifier.sqlite') as db_cur:
+            db_cur.execute("SELECT leaser FROM contract WHERE id = ?", (leasers_id,))
+            leaser = db_cur.fetchone()
+        return render_template('leasers_id.html', leaser=leaser)
 
 
 @app.route('/profile', methods=['GET', 'DELETE'])
+@login_required
 def profile():
     if request.method == 'GET':
-        return render_template('profile.html')
+        with DB_local('identifier.sqlite') as db_cur:
+            query = f'SELECT * FROM user WHERE login = ?'
+            print(query)
+            db_cur.execute(query, (session['logged_in'],))
+            full_name = db_cur.fetchone()['full_name']
+        return render_template('user.html', full_name=full_name)
     if request.method == 'DELETE':
         return 'DELETE'
 
 
 
 @app.route('/profile/<favouties>', methods=['GET', 'POST', 'PATCH', 'DELETE'])
+@login_required
 def profile_fav(favouties):
     if request.method == 'GET':
-        return render_template('favouties.html')
+        with DB_local('identifier.sqlite') as db_cur:
+            db_cur.execute("SELECT item FROM favorites WHERE id = ?", (favouties,))
+            item = db_cur.fetchone()
+        return render_template('favouties.html' , item=item)
     if request.method == 'POST':
         return f'POST {favouties}'
     if request.method == 'PATCH':
@@ -140,43 +184,76 @@ def profile_fav(favouties):
 
 
 @app.route('/profile/favouties/<favourite_id>', methods=['DELETE'])
+@login_required
 def profile_user_fav(favourite_id):
     if request.method == 'DELETE':
         return f'DELETE {favourite_id}'
 
 
 @app.route('/contracts', methods=['GET', 'POST'])
+@login_required
 def contracts():
     if request.method == 'GET':
-        return render_template('contracts.html')
+        with DB_local('identifier.sqlite') as db_cur:
+            db_cur.execute("SELECT * FROM contract")
+            contracts = db_cur.fetchall()
+            return render_template('contracts.html', contracts=contracts)
     if request.method == 'POST':
+        with DB_local('identifier.sqlite') as db_cur:
+            db_cur.execute('select id from user where login = ?', (session['logged_in'],))
+            my_id = db_cur.fetchone()['id']
+            taker = my_id
+            item_id = request.form['item']
+
+            db_cur.execute('select * from item where id = ?', (item_id,))
+            leaser = db_cur.fetchone()['owner']
+
+            contract_status = "pending"
+
+            query_args = (request.form['text'], request.form['start_date'], request.form['end_date'], leaser, taker, item_id, contract_status)
+            inser_query = '''insert into contract (text, start_date, end_date, leaser, taker, item, status) values (?, ?, ?, ?, ?, ?, ?)'''
+            db_cur.execute(inser_query, query_args)
+
+
         return 'POST'
 
 
 @app.route('/contracts/<contract_id>', methods=['GET', 'PATCH'])
+@login_required
 def contract_details(contract_id):
     if request.method == 'GET':
+        with DB_local('identifier.sqlite') as db_cur:
+            db_cur.execute("SELECT * FROM contract WHERE id = ?", (contract_id,))
+            contract = db_cur.fetchone()
         return render_template('contract_id.html')
     if request.method == 'PATCH':
         return f'PATCH {contract_id}'
 
 
 @app.route('/search', methods=['GET', 'POST'])
+@login_required
 def search():
     if request.method == 'GET':
+        with DB_local('identifier.sqlite') as db_cur:
+            db_cur.execute("SELECT * FROM search")
         return render_template('search.html')
     if request.method == 'POST':
-        return 'POST'
+            return 'POST'
 
 
 @app.route('/complain', methods=['POST'])
+@login_required
 def complain():
     if request.method == 'POST':
         return 'POST'
 
 @app.route('/compare', methods=['GET', 'PATCH'])
+@login_required
 def compare():
     if request.method == 'GET':
+        with DB_local('identifier.sqlite') as db_cur:
+            db_cur.execute("SELECT * FROM item WHERE id = ?", (session['logged_in'],))
+            item = db_cur.fetchone()
         return render_template('compare.html')
     if request.method == 'PATCH':
         return 'PATCH'

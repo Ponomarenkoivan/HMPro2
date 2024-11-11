@@ -5,6 +5,13 @@
     <title>Title</title>
 </head>
 <body>
-
+<h1>Contract Details</h1>
+{% if contract %}
+    <p><strong>Contract ID:</strong> {{ contract[0] }}</p>
+    <p><strong>Contract ITEM:</strong> {{ contract[1] }}</p>
+    <p><strong>Contract Status:</strong> {{ contract[2] }}</p>
+{% else %}
+    <p>Contract not found.</p>
+{% endif %}
 </body>
 </html>

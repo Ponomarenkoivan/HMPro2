@@ -1,9 +1,19 @@
 from functools import wraps
 from typing import Dict, Any
+from unittest import result
 
 from click.formatting import join_options
 from flask import Flask, request, render_template, redirect, session, url_for
 import sqlite3
+
+from sqlalchemy import select
+from sqlalchemy.sql.functions import current_user
+
+from database import init_db, db_session
+import models
+
+
+
 app = Flask(__name__)
 # /login [GET, POST]
 # /register [GET, POST]
@@ -54,38 +64,60 @@ def login_required(f):
         return f(*args, **kwargs)
     return wrap
 
-class DataBase:
-    db_file = 'identifier.sqlite'
-    def select(self, table, filter_dict=None, join_conditions=None, join_table=None):
-        if filter_dict is None:
-            filter_dict = {}
+# class DataBase:
+#     db_file = 'identifier.sqlite'
+#     def select(self, table, filter_dict=None, join_conditions=None, join_table=None):
+#         if filter_dict is None:
+#             filter_dict = {}
+#
+#             self.query = f'SELECT * FROM {self.table_name_}'
+#             if join_table is not None:
+#                 query += f' JOIN {join_conditions} ON'
+#                 join_conditions_list = []
+#                 for left_field, right_field in join_conditions.items():
+#                     join_conditions_list.append(f'{table}.{left_field}={join_table}.{right_field}')
+#                 query += ' AND '.join(join_conditions_list)
+#
+#
+#
+#     def insert(self, table, data):
+#         with DB_local(self.db_file) as db:
+#             query = f'INSERT INTO {self.table_name_} ('
+#             query += ', '.join(data.keys())
+#             query += ') VALUES ('
+#             query += ', '.join([f':{itm}' for itm in data.keys()])
+#             query += ')'
+#             db.execute(query, data)
+#
+#     def filter(self, **kwargs):
+#         if kwargs:
+#             itms = [f"{key} = ?" for key in filter_dict.keys()]
+#             query += ' WHERE ' + ' AND '.join(itms)
+#         self.query += query
+#
+#     def all(self):
+#         with DB_local(self.db_file) as db:
+#             db.execute(self.query)
+#             return db.fetchall()
 
-        with DB_local(self.db_file) as db:
-            query = f'SELECT * FROM {table}'
-            if join_table is not None:
-                query += f' JOIN {join_conditions} ON'
-                join_conditions_list = []
-                for left_field, right_field in join_conditions.items():
-                    join_conditions_list.append(f'{table}.{left_field}={join_table}.{right_field}')
-                query += ' AND '.join(join_conditions_list)
+# db_connector = DataBase()
+#
+# class User(DataBase):
+#     table_name_ = 'user'
+#     id = None
+#     login = None
+#     password = None
+#     full_name = None
+#     def __init__(self, id, login, password, full_name):
+#         self.id = id
+#         self.login = login
+#         self.password = password
+#         self.full_name = full_name
+#
+#     def save(self):
+#         self.insert()
 
-            if filter_dict:
-                itms = [f"{key} = ?" for key in filter_dict.keys()]
-                query += ' WHERE ' + ' AND '.join(itms)
 
-            db.execute(query, tuple(value for value in filter_dict.values()))
-            return  db.fetchall()
-
-    def insert(self, table, data):
-        with DB_local(self.db_file) as db:
-            query = f'INSERT INTO {table} ('
-            query += ', '.join(data.keys())
-            query += ') VALUES ('
-            query += ', '.join([f':{itm}' for itm in data.keys()])
-            query += ')'
-            db.execute(query, data)
-
-db_connector = DataBase()
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -94,13 +126,11 @@ def login():
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
-
-        user_data = db_connector.select('user', {'login': username, 'password': password})
-
-        if user_data:
-
-            session['logged_in'] = user_data[0]['login']
-            return "Login successful, welcome " + user_data[0]['login']
+        init_db()
+        user = db_session.scalar(select(models.User).where(models.User.login == username))
+        if user and user.password == password:
+            session['logged_in'] = user.login
+            return "Login successful, welcome " + user.login
         else:
             return "Wrong username or password", 401
 
@@ -111,8 +141,11 @@ def register(form_data=None):
     if request.method == 'GET':
         return render_template('register.html')
     if request.method == 'POST':
-        form_data = request.form
-        db_connector.insert('user', form_data)
+        form_data = dict(request.form)
+        init_db()
+        user = models.User(**form_data)
+        db_session.add(user)
+        db_session.commit()
         return redirect('/login')
 
 
@@ -124,19 +157,22 @@ def logout():
 @app.route('/items', methods=['GET', 'POST'])
 def items():
     if request.method == 'GET':
-        items = db_connector.select('item')
+        init_db()
+        items_query = select(models.Item)
+        items = list(db_session.execute(items_query).scalars())
         return render_template('items.html', items=items)
 
     if request.method == 'POST':
         if session.get('logged_in') is None:
             return redirect('/login')
         else:
-            user_id = db_connector.select('user', {'login': session['logged_in']})[0]['id']
-
-            query_args = dict(request.form)
-            query_args['owner'] = user_id
-
-            db_connector.insert('item', query_args)
+            init_db()
+            user = db_session.scalar(select(models.User).where(models.User.login == session['logged_in']))
+            query_args = dict(request.args)
+            query_args['owner'] = user.id
+            new_item = models.Item(**query_args)
+            db_session.add(new_item)
+            db_session.commit()
             return redirect('/items')
 
 
@@ -144,7 +180,10 @@ def items():
 @app.route('/items/<items_id>', methods=['GET', 'DELETE'])
 def item_details(items_id):
     if request.method == 'GET':
-        item = db_connector.select('item', {'id': items_id})[0]
+        init_db()
+        item = db_session.scalar(select(models.Item).where(models.Item.id == items_id))
+        if not item:
+            return "Item not found", 404
         return render_template('items_id.html', item=item)
     if request.method == 'DELETE':
         if session.get('logged_in') is None:
@@ -155,96 +194,103 @@ def item_details(items_id):
 @app.route('/leasers', methods=['GET'])
 def leasers(full_name):
     if request.method == 'GET':
-        leasers = db_connector.select('leaser', {'full_name': full_name})
+        init_db()
+        leaser_query= select(models.Contract)
+        leasers = list(db_session.execute(leaser_query).scalars())
         return render_template('leasers.html', leasers=leasers)
 
 
 @app.route('/leasers/<leasers_id>', methods=['GET'])
 def leaser_details(leasers_id):
     if request.method == 'GET':
-        leasers_id = db_connector.select('leaser', {'id': leasers_id})[0]['id']
-        return render_template('leasers_id.html', leasers=leasers)
+        init_db()
+        leasers_query = select(models.Contract).where(models.Contract.id == leasers_id)
+        leaser = list(db_session.execute(leasers_query).scalars())
+        return render_template('leasers_id.html', leaser=leaser)
 
 
 @app.route('/profile', methods=['GET', 'DELETE'])
 @login_required
 def profile():
+    if 'logged_in' not in session:
+        return redirect('/login')
+    user_login = session['logged_in']
+
     if request.method == 'GET':
-        user_data = db_connector.select('user', {'login': session.get('logged_in')})
-        if not user_data:
+        init_db()
+        user = db_session.scalar(select(models.User).where(models.User.login == user_login))
+        if not user:
             return redirect('/login')
-        full_name = user_data[0].get('full_name')
-        return render_template('user.html', full_name=full_name)
+        return render_template('profile.html', user=user)
     if request.method == 'DELETE':
         return 'DELETE'
 
 
 
-@app.route('/profile/<favouties>', methods=['GET', 'POST', 'PATCH', 'DELETE'])
+@app.route('/profile/<favorites>', methods=['GET', 'POST', 'PATCH', 'DELETE'])
 @login_required
-def profile_fav(favouties, favourites=None):
+def profile_fav(favorites):
+    init_db()
+    user_login = session['logged_in']
+
     if request.method == 'GET':
-        result = db_connector.select('favorites', {'id': favourites})
-        if not result:
-            return "Item not found", 404
-        item = result[0].get('item')
-        return render_template('favourites.html', item=item)
-    elif request.method == 'POST':
-        new_item = request.form.get('new_item')
-        db_connector.insert('favorites', {'id': favourites, 'item': new_item})
-        return f'POST {favourites}', 201
+        favorites = db_session.scalar(select(models.Favorite).where(models.Favorite.user == user_login)).all
+        if not favorites:
+            return "No favorites", 404
+        return render_template('favorites.html', favorites=favorites)
+    if request.method == 'POST':
+        new_favorite = models.Favorite(**request.json)
+        db_session.add(new_favorite)
+        db_session.commit()
+        return redirect('/profile')
     if request.method == 'PATCH':
-        return f'PATCH {favouties}'
+        return f'PATCH {favorites}'
     if request.method == 'DELETE':
-        return f'DELETE {favouties}'
+        return f'DELETE {favorites}'
 
 
-@app.route('/profile/favouties/<favourite_id>', methods=['DELETE'])
+@app.route('/profile/favorites/<favorite_id>', methods=['DELETE'])
 @login_required
-def profile_user_fav(favourite_id):
+def profile_user_fav(favorite_id):
     if request.method == 'DELETE':
-        return f'DELETE {favourite_id}'
+        return f'DELETE {favorite_id}'
 
 
 @app.route('/contracts', methods=['GET', 'POST'])
 @login_required
 def contracts():
     if request.method == 'GET':
-        contracts = db_connector.select('contract')
+        init_db()
+        contracts = db_session.scalars(select(models.Contract)).all()
         return render_template('contracts.html', contracts=contracts)
-    elif request.method == 'POST':
-        user_data = db_connector.select('user', {'login': session.get('logged_in')})
-        if not user_data:
+
+    if request.method == 'POST':
+        user = db_session.scalar(select(models.User).where(models.User.login == session.get('logged_in')))
+        if not user:
             return redirect('/login')
-        taker = user_data[0].get('id')
+
         item_id = request.form['item']
-        item_data = db_connector.select('item', {'id': item_id})
-        if not item_data:
+        item = db_session.scalar(select(models.Item).where(models.Item.id == item_id))
+        if not item:
             return "Item not found", 404
-        leaser = item_data[0].get('owner')
-        contract_data = {
-            'text': request.form['text'],
-            'start_date': request.form['start_date'],
-            'end_date': request.form['end_date'],
-            'leaser': leaser,
-            'taker': taker,
-            'item': item_id,
-            'status': "pending"
-        }
-        db_connector.insert('contract', contract_data)
-        return 'POST'
+
+        query_args = dict(request.args)
+        new_contract = models.Contract(**query_args)
+        db_session.add(new_contract)
+        db_session.commit()
+        return redirect('/contracts')
 
 
 @app.route('/contracts/<contract_id>', methods=['GET', 'PATCH'])
 @login_required
 def contract_details(contract_id):
     if request.method == 'GET':
-        contract_data = db_connector.select('contract', {'id': contract_id})
-        if contract_data:
-            contract = contract_data[0]
-            return render_template('contract_id.html', contract=contract)
-        else:
-            return "Contract not found",404
+        init_db()
+        contract = db_session.scalar(select(models.Contract).where(models.Contract.id == contract_id))
+        if not contract:
+            return "Contract not found", 404
+        return render_template('contract_id.html', contract=contract)
+
     if request.method == 'PATCH':
         return f'PATCH {contract_id}'
 
@@ -253,26 +299,44 @@ def contract_details(contract_id):
 @login_required
 def search():
     if request.method == 'GET':
-        search_results = db_connector.select('search_history')
+        init_db()
+        user_login = session['logged_in']
+        user = db_session.scalar(select(models.User).where(models.User.login == user_login))
+        search_results = db_session.scalar(select(models.Search_history).where(models.Search_history.user == user_login))
         return render_template('search.html', search_results=search_results)
     if request.method == 'POST':
-        search_term = request.form.get('search_text')
-        db_connector.insert('search_history', {'term': search_term})
-        return 'POST'
-
+        search_results = request.form.get('search_text')
+        if not search_results:
+            return "Search text not found", 404
+        query_args = dict(request.args)
+        search_entry= models.Contract(**query_args)
+        db_session.add(search_entry)
+        db_session.commit()
+        return redirect('/search')
 
 @app.route('/complain', methods=['POST'])
 @login_required
 def complain():
+    init_db()
+    user_login = session['logged_in']
+    user = db_session.scalar(select(models.User).where(models.User.login == user_login))
+
     if request.method == 'POST':
-        db_connector.insert('feedback', {'complain': request.form['complain']})
-        return 'POST'
+        complaint_text = request.form.get('complain')
+        if not complaint_text:
+            return "Complaint text is required", 400
+        query_args = dict(request.args)
+        feedback = models.Feedback(**query_args)
+        db_session.add(feedback)
+        db_session.commit()
+        return "Complaint submitted", 201
 
 @app.route('/compare', methods=['GET', 'PATCH'])
 @login_required
 def compare():
     if request.method == 'GET':
-        db_connector.select('item', {'description': request.args.get('description')})
+        init_db()
+        compare_items = db_session.scalar(select(models.Item).where(models.Item.description == 'description')).all()
         return render_template('compare.html')
     if request.method == 'PATCH':
         return 'PATCH'

@@ -5,8 +5,13 @@
     <title>Title</title>
 </head>
 <body>
-{% for one_user in user %}
-    <div>{{ one_user.full_name }}</div>
-{% endfor %}
+    <h1>Leasers</h1>
+    <ul>
+        {% for leaser in leasers %}
+            <li>
+                <a href="/leasers/{{ leaser.id }}">{{ leaser.text }}</a>
+            </li>
+        {% endfor %}
+    </ul>
 </body>
 </html>

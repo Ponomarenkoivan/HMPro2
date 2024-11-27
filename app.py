@@ -65,7 +65,7 @@ def login_required(f):
     return wrap
 
 # class DataBase:
-#     db_file = 'identifier.sqlite'
+#     db_file = 'identifier2.sqlite'
 #     def select(self, table, filter_dict=None, join_conditions=None, join_table=None):
 #         if filter_dict is None:
 #             filter_dict = {}

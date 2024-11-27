@@ -1,3 +1,5 @@
+import datetime
+
 from sqlalchemy import Column, Integer, String, REAL, ForeignKey, DateTime
 from sqlalchemy.orm import mapped_column
 
@@ -12,6 +14,7 @@ class User(Base):
     full_name = Column(String(50))
     contacts = Column(String(100))
     pfoto = Column(String(100))
+    email = Column(String(120), nullable=True)
 
     def __init__(self, login, password, ipn, full_name, contacts, pfoto):
         self.login = login
@@ -61,6 +64,7 @@ class Contract(Base):
     taker = Column(Integer, unique=True)
     item = Column(Integer, unique=True)
     status = Column(Integer, unique=True)
+    signed_datetime = Column(DateTime, default=datetime.datetime.now)
 
     def __init__(self, text, start_date, end_date, leaser, taker, item, status):
         self.text = text
@@ -76,6 +80,7 @@ class Favorite(Base):
     id = Column(Integer, primary_key=True, autoincrement=True, nullable=False)
     user = Column(Integer, ForeignKey('user.id'))
     item = Column(Integer, ForeignKey('item.id'))
+    timestamp = Column(DateTime, default=datetime.datetime.now, nullable=True)
 
     def __init__(self, user, item):
         self.user = user
@@ -89,6 +94,7 @@ class Feedback(Base):
     text = Column(String(500))
     grade = Column(Integer)
     contract = Column(Integer, ForeignKey('contract.id'))
+    timestamp = Column(DateTime, default=datetime.datetime.now)
 
     def __init__(self, author, user, text, grade, contract):
         self.author = author

@@ -11,31 +11,11 @@ from sqlalchemy.sql.functions import current_user
 
 from database import init_db, db_session
 import models
-
+import celery_tasks
 
 
 app = Flask(__name__)
-# /login [GET, POST]
-# /register [GET, POST]
-# /logout [GET ? POST ?? DELETE]
-#
-# /profile (/user, /me) [GET, PUT(PATCH), DELETE]
-#       ?  /favouties [GET, POST, DELETE, PATCH]
-#       ??  /favouties/<favourite_id> [DELETE]
-#       не додавав, вважаю непотрібним /search_history [GET, DELETE]
-#
-# /items [GET, POST]
-# /items/<item_id> [GET, DELETE]
-# /leasers [GET]
-# /leasers/<leaser_id> [GET]
-#
-# /contracts [GET, POST]
-# /contracts/<contract_id> [GET, PATCH/PUT]
-#
-# /search [GET, (POST)]
-#
-# /complain [POST]
-# /compare [GET, PUT/PATCH]
+
 app.secret_key = 'vemoevmerivjnteb'
 
 def dict_factory(cursor, row):
@@ -64,58 +44,7 @@ def login_required(f):
         return f(*args, **kwargs)
     return wrap
 
-# class DataBase:
-#     db_file = 'identifier2.sqlite'
-#     def select(self, table, filter_dict=None, join_conditions=None, join_table=None):
-#         if filter_dict is None:
-#             filter_dict = {}
-#
-#             self.query = f'SELECT * FROM {self.table_name_}'
-#             if join_table is not None:
-#                 query += f' JOIN {join_conditions} ON'
-#                 join_conditions_list = []
-#                 for left_field, right_field in join_conditions.items():
-#                     join_conditions_list.append(f'{table}.{left_field}={join_table}.{right_field}')
-#                 query += ' AND '.join(join_conditions_list)
-#
-#
-#
-#     def insert(self, table, data):
-#         with DB_local(self.db_file) as db:
-#             query = f'INSERT INTO {self.table_name_} ('
-#             query += ', '.join(data.keys())
-#             query += ') VALUES ('
-#             query += ', '.join([f':{itm}' for itm in data.keys()])
-#             query += ')'
-#             db.execute(query, data)
-#
-#     def filter(self, **kwargs):
-#         if kwargs:
-#             itms = [f"{key} = ?" for key in filter_dict.keys()]
-#             query += ' WHERE ' + ' AND '.join(itms)
-#         self.query += query
-#
-#     def all(self):
-#         with DB_local(self.db_file) as db:
-#             db.execute(self.query)
-#             return db.fetchall()
 
-# db_connector = DataBase()
-#
-# class User(DataBase):
-#     table_name_ = 'user'
-#     id = None
-#     login = None
-#     password = None
-#     full_name = None
-#     def __init__(self, id, login, password, full_name):
-#         self.id = id
-#         self.login = login
-#         self.password = password
-#         self.full_name = full_name
-#
-#     def save(self):
-#         self.insert()
 
 
 
@@ -181,10 +110,11 @@ def items():
 def item_details(items_id):
     if request.method == 'GET':
         init_db()
-        item = db_session.scalar(select(models.Item).where(models.Item.id == items_id))
+        item = db_session.scalar(select(models.Item).filter_by(id=items_id)).scalar()
+
         if not item:
             return "Item not found", 404
-        return render_template('items_id.html', item=item)
+        return render_template('items_id.html', item=item, user_id=session['logged_in'])
     if request.method == 'DELETE':
         if session.get('logged_in') is None:
             return redirect('/login')
@@ -261,7 +191,7 @@ def profile_user_fav(favorite_id):
 def contracts():
     if request.method == 'GET':
         init_db()
-        contracts = db_session.scalars(select(models.Contract)).all()
+        contracts = db_session.scalars(select(models.Contract)).scalars()
         return render_template('contracts.html', contracts=contracts)
 
     if request.method == 'POST':
@@ -278,6 +208,7 @@ def contracts():
         new_contract = models.Contract(**query_args)
         db_session.add(new_contract)
         db_session.commit()
+        celery_tasks.send_email(new_contract.id)
         return redirect('/contracts')
 
 
@@ -341,6 +272,12 @@ def compare():
     if request.method == 'PATCH':
         return 'PATCH'
 
+@app.route('/add_task', methods=['GET'])
+def set_task():
+    celery_tasks.add.delay(1, 1)
+    return 'Task send'
+
+
 
 if __name__ == '__main__':
-    app.run(debug=True, host="0.0.0.0")
+    app.run(debug=True, host="0.0.0.0", port=5001)
